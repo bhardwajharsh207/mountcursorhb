@@ -21,17 +21,7 @@ async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-interface GenerationError {
-  status: number;
-  error: any;
-}
-
-async function generateImageWithRetry(
-  modelId: string,
-  prompt: string,
-  API_KEY: string,
-  retryCount = 0
-): Promise<ArrayBuffer> {
+async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: string, retryCount = 0): Promise<ArrayBuffer> {
   try {
     const response = await fetch(
       `https://api-inference.huggingface.co/models/${modelId}`,
@@ -43,27 +33,35 @@ async function generateImageWithRetry(
         },
         body: JSON.stringify({
           inputs: prompt,
-          wait_for_model: true
+          parameters: {
+            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
+            num_inference_steps: 20,
+            guidance_scale: 7.0,
+            width: 512,
+            height: 512,
+            seed: Math.floor(Math.random() * 1000000)
+          }
         }),
       }
     );
 
-    if (response.ok) {
-      return await response.arrayBuffer();
-    }
-
-    const errorData = await response.json().catch(() => ({}));
-    console.log(`API Response for ${modelId}:`, { status: response.status, error: errorData });
-    
-    if ((response.status === 503 || errorData.error?.includes('loading')) && retryCount < MAX_RETRIES) {
-      console.log(`Model warming up, retry ${retryCount + 1} of ${MAX_RETRIES}`);
+    if (response.status === 503 && retryCount < MAX_RETRIES) {
+      console.log(`Model warming up, retry ${retryCount + 1}/${MAX_RETRIES}`);
       await sleep(RETRY_DELAY);
       return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
     }
 
-    throw new Error(JSON.stringify({ status: response.status, error: errorData }));
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.arrayBuffer();
   } catch (error) {
-    console.error(`Error with model ${modelId}:`, error);
+    if (retryCount < MAX_RETRIES) {
+      console.log(`Error occurred, retry ${retryCount + 1}/${MAX_RETRIES}`);
+      await sleep(RETRY_DELAY);
+      return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
+    }
     throw error;
   }
 }
@@ -93,58 +91,39 @@ export async function POST(request: Request) {
       );
     }
 
-    // Using a single, reliable model for both types
-    const modelId = 'SG161222/Realistic_Vision_V5.1_noVAE';
+    // Select the appropriate model and prompt
+    const modelId = model === 'waifu' 
+      ? 'Linaqruf/anything-v3.0'  // Faster anime-style model
+      : 'SG161222/Realistic_Vision_V5.1_noVAE';  // Faster realistic model
 
-    // Prepare the prompt based on the model type
     const enhancedPrompt = model === 'waifu'
-      ? `anime artwork, anime style, ${prompt}, best quality, masterpiece`
-      : `${prompt}, best quality, masterpiece, realistic`;
+      ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
+      : `${prompt}, high quality, masterpiece, highly detailed, realistic`;
 
     try {
-      const response = await fetch(
-        `https://api-inference.huggingface.co/models/${modelId}`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            inputs: enhancedPrompt,
-            options: {
-              wait_for_model: true,
-              use_cache: false
-            }
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        console.error('API Error:', {
-          status: response.status,
-          error
-        });
-        throw new Error(JSON.stringify({ status: response.status, error }));
-      }
-
-      const imageBuffer = await response.arrayBuffer();
+      const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
       const base64Image = Buffer.from(imageBuffer).toString('base64');
       const dataUrl = `data:image/jpeg;base64,${base64Image}`;
-      
       return NextResponse.json({ output: dataUrl });
-    } catch (error) {
-      console.error('Generation error:', error);
+    } catch (error: any) {
+      console.error('Error generating image:', error);
+      
+      if (error.message.includes('429')) {
+        return NextResponse.json(
+          { error: 'Too many requests. Please wait a minute and try again.' },
+          { status: 429 }
+        );
+      }
+
       return NextResponse.json(
-        { error: 'Failed to generate image. The service might be busy, please try again in a minute.' },
+        { error: 'Failed to generate image. Please try again.' },
         { status: 500 }
       );
     }
   } catch (error) {
-    console.error('Request error:', error);
+    console.error('Error in API route:', error);
     return NextResponse.json(
-      { error: 'Failed to process request. Please try again.' },
+      { error: 'An unexpected error occurred. Please try again.' },
       { status: 500 }
     );
   }
