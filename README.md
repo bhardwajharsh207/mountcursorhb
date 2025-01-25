@@ -1,15 +1,34 @@
-# Ansh & Riley Full-Stack Template
+# AI Image Generator
 
-This is a full-stack template project for Software Composers to create  applications with AI.
+A Next.js application that generates images using AI models through Hugging Face's API. Features include:
 
-## Getting started
-To create a new project, you go to `/paths`, choose from our list of Paths, and then use Cursor's Composer feature to quickly scaffold your project!
+- User authentication with Firebase
+- Image generation with multiple AI models
+- Image history for authenticated users
+- Responsive and modern UI
 
-You can also edit the Path's prompt template to be whatever you like!
+## Features
 
-## Technologies used
-This doesn't really matter, but is useful for the AI to understand more about this project. We are using the following technologies
-- React with Next.js 14 App Router
-- TailwindCSS
-- Firebase Auth, Storage, and Database
-- Multiple AI endpoints including OpenAI, Anthropic, and Replicate using Vercel's AI SDK
+- Google Sign-in authentication
+- Two AI models:
+  - OpenJourney for general image generation
+  - Stable Diffusion for anime-style images
+- Image history with Firebase storage
+- Real-time status updates
+- Rate limiting handling
+
+## Technologies Used
+
+- Next.js 14
+- Firebase Authentication
+- Firebase Firestore
+- Hugging Face API
+- Tailwind CSS
+
+## Getting Started
+
+1. Clone the repository
+2. Install dependencies: `npm install`
+3. Set up environment variables in `.env.local`
+4. Run the development server: `npm run dev`
+5. Open [http://localhost:3000](http://localhost:3000)
