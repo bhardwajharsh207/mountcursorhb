@@ -23,6 +23,8 @@ async function sleep(ms: number) {
 
 async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: string, retryCount = 0): Promise<ArrayBuffer> {
   try {
+    console.log(`Attempting to generate image with model: ${modelId}`);
+    
     const response = await fetch(
       `https://api-inference.huggingface.co/models/${modelId}`,
       {
@@ -33,7 +35,14 @@ async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: 
         },
         body: JSON.stringify({
           inputs: prompt,
-          parameters: {
+          parameters: modelId.includes('waifu') ? {
+            negative_prompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
+            num_inference_steps: 30,
+            guidance_scale: 11,
+            width: 512,
+            height: 512,
+            seed: Math.floor(Math.random() * 1000000)
+          } : {
             negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
             num_inference_steps: 20,
             guidance_scale: 7.0,
@@ -52,11 +61,13 @@ async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: 
     }
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
     }
 
     return await response.arrayBuffer();
   } catch (error) {
+    console.error('Error in generateImageWithRetry:', error);
     if (retryCount < MAX_RETRIES) {
       console.log(`Error occurred, retry ${retryCount + 1}/${MAX_RETRIES}`);
       await sleep(RETRY_DELAY);
@@ -93,11 +104,11 @@ export async function POST(request: Request) {
 
     // Select the appropriate model and prompt
     const modelId = model === 'waifu' 
-      ? 'Linaqruf/anything-v3.0'  // Faster anime-style model
-      : 'SG161222/Realistic_Vision_V5.1_noVAE';  // Faster realistic model
+      ? 'hakurei/waifu-diffusion'  // Original waifu-diffusion model
+      : 'prompthero/openjourney-v4';  // Keep OpenJourney as is
 
     const enhancedPrompt = model === 'waifu'
-      ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
+      ? `masterpiece, best quality, ultra-detailed, illustration, ${prompt}, anime style`
       : `${prompt}, high quality, masterpiece, highly detailed, realistic`;
 
     try {
@@ -115,8 +126,15 @@ export async function POST(request: Request) {
         );
       }
 
+      if (error.message.includes('503')) {
+        return NextResponse.json(
+          { error: 'Model is currently loading. Please try again in a few seconds.' },
+          { status: 503 }
+        );
+      }
+
       return NextResponse.json(
-        { error: 'Failed to generate image. Please try again.' },
+        { error: `Failed to generate image: ${error.message}` },
         { status: 500 }
       );
     }
