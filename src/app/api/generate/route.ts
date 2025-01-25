@@ -1,5 +1,30 @@
 import { NextResponse } from 'next/server';
 
+// Simple in-memory rate limiting
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 5; // Increased to 5 requests per minute
+
+const requestLog: { [key: string]: number[] } = {};
+
+function isRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const userRequests = requestLog[userId] || [];
+  
+  // Clean up old requests
+  requestLog[userId] = userRequests.filter(timestamp => 
+    now - timestamp < RATE_LIMIT_WINDOW
+  );
+
+  // Check if user has exceeded rate limit
+  if (requestLog[userId].length >= MAX_REQUESTS_PER_WINDOW) {
+    return true;
+  }
+
+  // Log new request
+  requestLog[userId] = [...requestLog[userId], now];
+  return false;
+}
+
 export async function POST(request: Request) {
   try {
     const { prompt, model } = await request.json();
@@ -16,29 +41,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // Select the appropriate model based on user choice
-    const modelId = model === 'waifu' 
-      ? 'CompVis/stable-diffusion-v1-4'  // Using a more stable model for anime-style images
-      : 'prompthero/openjourney-v4';
-
-    // First, check if the model is ready
-    const statusResponse = await fetch(
-      `https://api-inference.huggingface.co/models/${modelId}`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${API_KEY}`,
-        },
-      }
-    );
-
-    const statusData = await statusResponse.json();
-    if (statusData.error === 'Model is currently loading') {
+    // Use IP as user identifier for rate limiting
+    const userId = request.headers.get('x-forwarded-for') || 'anonymous';
+    if (isRateLimited(userId)) {
       return NextResponse.json(
-        { error: 'Model is warming up, please try again in a few seconds' },
-        { status: 503 }
+        { error: 'Rate limit exceeded. Please wait 1 minute before trying again.' },
+        { status: 429 }
       );
     }
+
+    // Select the appropriate model based on user choice
+    const modelId = model === 'waifu' 
+      ? 'stabilityai/stable-diffusion-xl-base-1.0'  // Using SDXL for better quality and rate limits
+      : 'stabilityai/stable-diffusion-2-1';  // Using SD 2.1 for better rate limits
 
     // Generate the image
     const response = await fetch(
@@ -51,14 +66,15 @@ export async function POST(request: Request) {
         },
         body: JSON.stringify({
           inputs: model === 'waifu' 
-            ? `anime style, high quality, masterpiece, ${prompt}`  // Enhance prompt for anime style
-            : prompt,
+            ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
+            : `${prompt}, high quality, masterpiece, highly detailed`,
           parameters: {
-            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark",
-            num_inference_steps: 50,  // Increased steps for better quality
-            guidance_scale: 7.5,
+            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
+            num_inference_steps: 20,  // Reduced for faster generation
+            guidance_scale: 7.0,
             width: 512,
-            height: 512
+            height: 512,
+            seed: Math.floor(Math.random() * 1000000)  // Random seed for variety
           }
         }),
       }
@@ -81,11 +97,18 @@ export async function POST(request: Request) {
 
       if (response.status === 429) {
         return NextResponse.json(
-          { error: 'Too many requests. Please wait a minute before trying again.' },
+          { error: 'Too many requests. Please wait a minute and try again.' },
           { status: 429 }
         );
       }
-      
+
+      if (response.status === 413) {
+        return NextResponse.json(
+          { error: 'Prompt is too long. Please try a shorter prompt.' },
+          { status: 413 }
+        );
+      }
+
       throw new Error(`Hugging Face API error: ${response.statusText}`);
     }
 
