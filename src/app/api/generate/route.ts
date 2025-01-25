@@ -43,14 +43,7 @@ async function generateImageWithRetry(
         },
         body: JSON.stringify({
           inputs: prompt,
-          parameters: {
-            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
-            num_inference_steps: 25,
-            guidance_scale: 7.5,
-            width: 512,
-            height: 512,
-            seed: Math.floor(Math.random() * 1000000)
-          }
+          wait_for_model: true
         }),
       }
     );
@@ -62,7 +55,7 @@ async function generateImageWithRetry(
     const errorData = await response.json().catch(() => ({}));
     console.log(`API Response for ${modelId}:`, { status: response.status, error: errorData });
     
-    if (response.status === 503 && retryCount < MAX_RETRIES) {
+    if ((response.status === 503 || errorData.error?.includes('loading')) && retryCount < MAX_RETRIES) {
       console.log(`Model warming up, retry ${retryCount + 1} of ${MAX_RETRIES}`);
       await sleep(RETRY_DELAY);
       return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
@@ -102,12 +95,12 @@ export async function POST(request: Request) {
 
     // Select the appropriate model and prompt
     const modelId = model === 'waifu'
-      ? 'Linaqruf/anything-v3.0'  // Changed to a more reliable anime model
-      : 'dreamlike-art/dreamlike-diffusion-1.0';  // Changed to a more reliable general model
+      ? 'runwayml/stable-diffusion-v1-5'  // Using a simpler, more stable model
+      : 'CompVis/stable-diffusion-v1-4';   // Using the original stable model
 
     const enhancedPrompt = model === 'waifu'
-      ? `masterpiece, best quality, anime style, ${prompt}, highly detailed anime artwork`
-      : `${prompt}, masterpiece, best quality, highly detailed, sharp focus, dramatic`;
+      ? `anime style, ${prompt}, high quality`
+      : `${prompt}, high quality`;
 
     try {
       const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
