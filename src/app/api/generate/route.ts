@@ -93,37 +93,51 @@ export async function POST(request: Request) {
       );
     }
 
-    // Select the appropriate model and prompt
-    const modelId = model === 'waifu'
-      ? 'runwayml/stable-diffusion-v1-5'  // Using a simpler, more stable model
-      : 'CompVis/stable-diffusion-v1-4';   // Using the original stable model
+    // Using a single, reliable model for both types
+    const modelId = 'SG161222/Realistic_Vision_V5.1_noVAE';
 
+    // Prepare the prompt based on the model type
     const enhancedPrompt = model === 'waifu'
-      ? `anime style, ${prompt}, high quality`
-      : `${prompt}, high quality`;
+      ? `anime artwork, anime style, ${prompt}, best quality, masterpiece`
+      : `${prompt}, best quality, masterpiece, realistic`;
 
     try {
-      const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
+      const response = await fetch(
+        `https://api-inference.huggingface.co/models/${modelId}`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            inputs: enhancedPrompt,
+            options: {
+              wait_for_model: true,
+              use_cache: false
+            }
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        console.error('API Error:', {
+          status: response.status,
+          error
+        });
+        throw new Error(JSON.stringify({ status: response.status, error }));
+      }
+
+      const imageBuffer = await response.arrayBuffer();
       const base64Image = Buffer.from(imageBuffer).toString('base64');
       const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+      
       return NextResponse.json({ output: dataUrl });
     } catch (error) {
       console.error('Generation error:', error);
-      
-      try {
-        const errorData = JSON.parse((error as Error).message) as GenerationError;
-        if (errorData.status === 429) {
-          return NextResponse.json(
-            { error: 'Too many requests. Please wait a minute and try again.' },
-            { status: 429 }
-          );
-        }
-      } catch (e) {
-        // Parsing error, fall through to default error
-      }
-
       return NextResponse.json(
-        { error: 'Failed to generate image. Please try again.' },
+        { error: 'Failed to generate image. The service might be busy, please try again in a minute.' },
         { status: 500 }
       );
     }
