@@ -2,27 +2,71 @@ import { NextResponse } from 'next/server';
 
 // Simple in-memory rate limiting
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 5; // Increased to 5 requests per minute
+const MAX_REQUESTS_PER_WINDOW = 5;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000; // 2 seconds
 
 const requestLog: { [key: string]: number[] } = {};
 
 function isRateLimited(userId: string): boolean {
   const now = Date.now();
   const userRequests = requestLog[userId] || [];
-  
-  // Clean up old requests
-  requestLog[userId] = userRequests.filter(timestamp => 
-    now - timestamp < RATE_LIMIT_WINDOW
-  );
-
-  // Check if user has exceeded rate limit
-  if (requestLog[userId].length >= MAX_REQUESTS_PER_WINDOW) {
-    return true;
-  }
-
-  // Log new request
+  requestLog[userId] = userRequests.filter(timestamp => now - timestamp < RATE_LIMIT_WINDOW);
+  if (requestLog[userId].length >= MAX_REQUESTS_PER_WINDOW) return true;
   requestLog[userId] = [...requestLog[userId], now];
   return false;
+}
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+interface GenerationError {
+  status: number;
+  error: any;
+}
+
+async function generateImageWithRetry(
+  modelId: string,
+  prompt: string,
+  API_KEY: string,
+  retryCount = 0
+): Promise<ArrayBuffer> {
+  const response = await fetch(
+    `https://api-inference.huggingface.co/models/${modelId}`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        inputs: prompt,
+        parameters: {
+          negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
+          num_inference_steps: 20,
+          guidance_scale: 7.0,
+          width: 512,
+          height: 512,
+          seed: Math.floor(Math.random() * 1000000)
+        }
+      }),
+    }
+  );
+
+  if (response.ok) {
+    return await response.arrayBuffer();
+  }
+
+  const errorData = await response.json().catch(() => ({}));
+  
+  if (response.status === 503 && retryCount < MAX_RETRIES) {
+    console.log(`Model warming up, retry ${retryCount + 1} of ${MAX_RETRIES}`);
+    await sleep(RETRY_DELAY);
+    return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
+  }
+
+  throw new Error(JSON.stringify({ status: response.status, error: errorData }));
 }
 
 export async function POST(request: Request) {
@@ -50,78 +94,44 @@ export async function POST(request: Request) {
       );
     }
 
-    // Select the appropriate model based on user choice
+    // Select the appropriate model and prompt
     const modelId = model === 'waifu' 
-      ? 'stabilityai/stable-diffusion-xl-base-1.0'  // Using SDXL for better quality and rate limits
-      : 'stabilityai/stable-diffusion-2-1';  // Using SD 2.1 for better rate limits
+      ? 'stabilityai/stable-diffusion-xl-base-1.0'
+      : 'stabilityai/stable-diffusion-2-1';
 
-    // Generate the image
-    const response = await fetch(
-      `https://api-inference.huggingface.co/models/${modelId}`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          inputs: model === 'waifu' 
-            ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
-            : `${prompt}, high quality, masterpiece, highly detailed`,
-          parameters: {
-            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
-            num_inference_steps: 20,  // Reduced for faster generation
-            guidance_scale: 7.0,
-            width: 512,
-            height: 512,
-            seed: Math.floor(Math.random() * 1000000)  // Random seed for variety
-          }
-        }),
-      }
-    );
+    const enhancedPrompt = model === 'waifu'
+      ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
+      : `${prompt}, high quality, masterpiece, highly detailed`;
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('API Error:', {
-        status: response.status,
-        statusText: response.statusText,
-        error: errorData
-      });
+    try {
+      const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
+      const base64Image = Buffer.from(imageBuffer).toString('base64');
+      const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+      return NextResponse.json({ output: dataUrl });
+    } catch (error) {
+      console.error('Generation error:', error);
       
-      if (response.status === 503) {
-        return NextResponse.json(
-          { error: 'Model is warming up, please try again in a few seconds' },
-          { status: 503 }
-        );
+      try {
+        const errorData = JSON.parse((error as Error).message) as GenerationError;
+        if (errorData.status === 429) {
+          return NextResponse.json(
+            { error: 'Too many requests. Please wait a minute and try again.' },
+            { status: 429 }
+          );
+        }
+      } catch (e) {
+        // Parsing error, fall through to default error
       }
 
-      if (response.status === 429) {
-        return NextResponse.json(
-          { error: 'Too many requests. Please wait a minute and try again.' },
-          { status: 429 }
-        );
-      }
-
-      if (response.status === 413) {
-        return NextResponse.json(
-          { error: 'Prompt is too long. Please try a shorter prompt.' },
-          { status: 413 }
-        );
-      }
-
-      throw new Error(`Hugging Face API error: ${response.statusText}`);
+      return NextResponse.json(
+        { error: 'Failed to generate image. Please try again.' },
+        { status: 500 }
+      );
     }
-
-    // Convert the binary image to base64
-    const imageBuffer = await response.arrayBuffer();
-    const base64Image = Buffer.from(imageBuffer).toString('base64');
-    const dataUrl = `data:image/jpeg;base64,${base64Image}`;
-
-    return NextResponse.json({ output: dataUrl });
   } catch (error) {
-    console.error('Error generating image:', error);
+    console.error('Request error:', error);
     return NextResponse.json(
-      { error: 'Failed to generate image. Please try again in a few seconds.' },
+      { error: 'Failed to process request. Please try again.' },
       { status: 500 }
     );
   }
