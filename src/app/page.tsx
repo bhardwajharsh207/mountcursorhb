@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
+import Image from 'next/image';
 
 type Model = 'openjourney' | 'waifu';
 
@@ -26,15 +27,7 @@ export default function HomePage() {
   const [selectedModel, setSelectedModel] = useState<Model>('openjourney');
   const [userImages, setUserImages] = useState<GeneratedImage[]>([]);
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-      return;
-    }
-    loadUserImages();
-  }, [user, router]);
-
-  const loadUserImages = async () => {
+  const loadUserImages = useCallback(async () => {
     if (!user) return;
     
     try {
@@ -55,7 +48,15 @@ export default function HomePage() {
     } catch (error) {
       console.error('Error loading images:', error);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+    loadUserImages();
+  }, [user, router, loadUserImages]);
 
   const generateImage = async () => {
     try {
@@ -169,10 +170,12 @@ export default function HomePage() {
 
               {imageUrl && (
                 <div className="mt-8">
-                  <img 
+                  <Image 
                     src={imageUrl} 
                     alt="Generated" 
-                    className="w-full rounded-xl shadow-lg" 
+                    width={512}
+                    height={512}
+                    className="w-full rounded-xl shadow-lg"
                   />
                 </div>
               )}
@@ -185,9 +188,11 @@ export default function HomePage() {
             <div className="grid grid-cols-2 gap-4">
               {userImages.map((image) => (
                 <div key={image.id} className="relative group">
-                  <img
+                  <Image
                     src={image.imageUrl}
                     alt={image.prompt}
+                    width={512}
+                    height={512}
                     className="w-full h-48 object-cover rounded-lg shadow-md"
                   />
                   <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-50 transition-all rounded-lg flex items-center justify-center">
