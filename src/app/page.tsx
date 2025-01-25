@@ -26,6 +26,7 @@ export default function HomePage() {
   const [error, setError] = useState('');
   const [selectedModel, setSelectedModel] = useState<Model>('openjourney');
   const [userImages, setUserImages] = useState<GeneratedImage[]>([]);
+  const [loadingTime, setLoadingTime] = useState<number | null>(null);
 
   const loadUserImages = useCallback(async () => {
     if (!user) return;
@@ -51,6 +52,18 @@ export default function HomePage() {
   }, [user]);
 
   useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (loadingTime !== null && loadingTime > 0) {
+      timer = setInterval(() => {
+        setLoadingTime(prev => prev !== null ? prev - 1 : null);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [loadingTime]);
+
+  useEffect(() => {
     if (!user) {
       router.push('/login');
       return;
@@ -62,6 +75,7 @@ export default function HomePage() {
     try {
       setLoading(true);
       setError('');
+      setLoadingTime(null);
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: {
@@ -72,7 +86,13 @@ export default function HomePage() {
       const data = await response.json();
       
       if (data.error) {
-        setError(data.error);
+        if (data.error.startsWith('Model is currently loading')) {
+          const match = data.error.match(/MODEL_LOADING:(\d+)/);
+          if (match) {
+            setLoadingTime(parseInt(match[1]));
+          }
+        }
+        setError(data.error.replace('MODEL_LOADING:', ''));
         return;
       }
 
@@ -93,7 +113,9 @@ export default function HomePage() {
       console.error('Error:', error);
       setError('Failed to generate image. Please try again.');
     } finally {
-      setLoading(false);
+      if (loadingTime === null) {
+        setLoading(false);
+      }
     }
   };
 
@@ -159,7 +181,15 @@ export default function HomePage() {
                 disabled={loading || !prompt}
                 className="w-full p-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl disabled:opacity-50 hover:from-blue-600 hover:to-blue-700 transition-all font-medium"
               >
-                {loading ? 'Generating...' : 'Generate Image'}
+                {loading ? (
+                  loadingTime !== null ? (
+                    `Model warming up... ${loadingTime}s remaining`
+                  ) : (
+                    'Generating...'
+                  )
+                ) : (
+                  'Generate Image'
+                )}
               </button>
 
               {error && (

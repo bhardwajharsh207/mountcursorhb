@@ -24,9 +24,26 @@ async function sleep(ms: number) {
 async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: string, retryCount = 0): Promise<ArrayBuffer> {
   try {
     const isOpenJourney = modelId.includes('openjourney');
-    console.log(`Attempting to generate image with ${isOpenJourney ? 'OpenJourney' : 'Waifu'} model (${modelId})`);
-    console.log(`Attempt ${retryCount + 1} of ${MAX_RETRIES + 1}`);
-    console.log(`Using prompt: ${prompt}`);
+    console.log(`[Attempt ${retryCount + 1}/${MAX_RETRIES + 1}] Generating image with ${modelId}`);
+    console.log(`Prompt: "${prompt}"`);
+    
+    const parameters = modelId.includes('waifu') ? {
+      negative_prompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
+      num_inference_steps: 30,
+      guidance_scale: 11,
+      width: 512,
+      height: 512,
+      seed: Math.floor(Math.random() * 1000000)
+    } : {
+      negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
+      num_inference_steps: 20,
+      guidance_scale: 7.0,
+      width: 512,
+      height: 512,
+      seed: Math.floor(Math.random() * 1000000)
+    };
+
+    console.log('Request parameters:', JSON.stringify(parameters, null, 2));
     
     const response = await fetch(
       `https://api-inference.huggingface.co/models/${modelId}`,
@@ -38,59 +55,65 @@ async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: 
         },
         body: JSON.stringify({
           inputs: prompt,
-          parameters: modelId.includes('waifu') ? {
-            negative_prompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
-            num_inference_steps: 30,
-            guidance_scale: 11,
-            width: 512,
-            height: 512,
-            seed: Math.floor(Math.random() * 1000000)
-          } : {
-            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
-            num_inference_steps: 20,
-            guidance_scale: 7.0,
-            width: 512,
-            height: 512,
-            seed: Math.floor(Math.random() * 1000000)
-          }
+          parameters
         }),
       }
     );
 
     console.log(`Response status: ${response.status} (${response.statusText})`);
+    
+    // Try to get response body for better error logging
+    const responseBody = await response.text();
+    console.log('Response body:', responseBody);
+
+    // Check if the response is JSON
+    let jsonResponse;
+    try {
+      jsonResponse = JSON.parse(responseBody);
+      if (jsonResponse.error) {
+        throw new Error(`API Error: ${jsonResponse.error}`);
+      }
+    } catch (e) {
+      // If it's not JSON, it might be the image data
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}, body: ${responseBody}`);
+      }
+    }
 
     if (response.status === 503 && retryCount < MAX_RETRIES) {
-      console.log(`${isOpenJourney ? 'OpenJourney' : 'Waifu'} model warming up, waiting ${RETRY_DELAY}ms before retry`);
+      console.log('Model is warming up, will retry');
+      if (retryCount === 0) {
+        throw new Error('MODEL_LOADING:20');
+      }
       await sleep(RETRY_DELAY);
       return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
     }
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`API Error for ${isOpenJourney ? 'OpenJourney' : 'Waifu'} model:`, {
-        status: response.status,
-        statusText: response.statusText,
-        error: errorText,
-        modelId,
-        retryCount
-      });
-      throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
+      throw new Error(`HTTP error! status: ${response.status}, body: ${responseBody}`);
     }
 
-    console.log(`Successfully received response from ${isOpenJourney ? 'OpenJourney' : 'Waifu'} model`);
-    return await response.arrayBuffer();
+    // Convert response back to ArrayBuffer if it was successful
+    if (typeof responseBody === 'string' && !responseBody.startsWith('{')) {
+      return Buffer.from(responseBody, 'binary');
+    }
+
+    throw new Error('Invalid response format from API');
   } catch (error: any) {
-    const isOpenJourney = modelId.includes('openjourney');
-    console.error(`Error in ${isOpenJourney ? 'OpenJourney' : 'Waifu'} model:`, {
-      error: error.message || String(error),
-      stack: error.stack || 'No stack trace',
+    console.error('Generation error:', {
+      message: error.message,
+      stack: error.stack,
       modelId,
       retryCount,
       prompt
     });
 
+    if (error.message === 'MODEL_LOADING:20') {
+      throw error;
+    }
+
     if (retryCount < MAX_RETRIES) {
-      console.log(`Error occurred with ${isOpenJourney ? 'OpenJourney' : 'Waifu'} model, retry ${retryCount + 1}/${MAX_RETRIES}`);
+      console.log(`Retrying after error (${retryCount + 1}/${MAX_RETRIES})`);
       await sleep(RETRY_DELAY);
       return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
     }
@@ -101,7 +124,7 @@ async function generateImageWithRetry(modelId: string, prompt: string, API_KEY: 
 export async function POST(request: Request) {
   try {
     const { prompt, model } = await request.json();
-    console.log(`Received request for ${model} model with prompt: ${prompt}`);
+    console.log(`New request - Model: ${model}, Prompt: "${prompt}"`);
 
     if (!prompt) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
@@ -109,71 +132,68 @@ export async function POST(request: Request) {
 
     const API_KEY = process.env.HUGGINGFACE_API_KEY;
     if (!API_KEY) {
-      console.error('Hugging Face API key not configured');
+      console.error('Missing API key');
       return NextResponse.json(
-        { error: 'Hugging Face API key not configured' },
+        { error: 'Server configuration error' },
         { status: 500 }
       );
     }
 
-    // Use IP as user identifier for rate limiting
     const userId = request.headers.get('x-forwarded-for') || 'anonymous';
     if (isRateLimited(userId)) {
-      console.log(`Rate limit exceeded for user ${userId}`);
+      console.log(`Rate limit exceeded for ${userId}`);
       return NextResponse.json(
-        { error: 'Rate limit exceeded. Please wait 1 minute before trying again.' },
+        { error: 'Rate limit exceeded. Please wait 1 minute.' },
         { status: 429 }
       );
     }
 
-    // Select the appropriate model and prompt
     const modelId = model === 'waifu' 
-      ? 'hakurei/waifu-diffusion'  // Original waifu-diffusion model
-      : 'prompthero/openjourney-v4';  // Keep OpenJourney as is
+      ? 'hakurei/waifu-diffusion'
+      : 'prompthero/openjourney-v4';
 
     const enhancedPrompt = model === 'waifu'
       ? `masterpiece, best quality, ultra-detailed, illustration, ${prompt}, anime style`
       : `${prompt}, high quality, masterpiece, highly detailed, realistic`;
 
-    console.log(`Using model: ${modelId} with enhanced prompt: ${enhancedPrompt}`);
+    console.log(`Selected model: ${modelId}`);
+    console.log(`Enhanced prompt: "${enhancedPrompt}"`);
 
     try {
       const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
-      console.log(`Successfully generated image with ${model} model`);
+      console.log('Successfully generated image');
       const base64Image = Buffer.from(imageBuffer).toString('base64');
-      const dataUrl = `data:image/jpeg;base64,${base64Image}`;
-      return NextResponse.json({ output: dataUrl });
+      return NextResponse.json({ output: `data:image/jpeg;base64,${base64Image}` });
     } catch (error: any) {
-      console.error(`Error generating image with ${model} model:`, {
-        error: error.message || String(error),
-        stack: error.stack || 'No stack trace',
-        modelId,
-        prompt: enhancedPrompt
+      console.error('Generation failed:', {
+        error: error.message,
+        stack: error.stack,
+        modelId
       });
-      
-      if (error.message?.includes('429')) {
-        return NextResponse.json(
-          { error: 'Too many requests. Please wait a minute and try again.' },
-          { status: 429 }
-        );
-      }
 
-      if (error.message?.includes('503')) {
+      if (error.message === 'MODEL_LOADING:20') {
         return NextResponse.json(
-          { error: 'Model is currently loading. Please try again in a few seconds.' },
+          { error: 'Model is currently loading. Please wait 20 seconds.' },
           { status: 503 }
         );
       }
 
+      if (error.message?.includes('429')) {
+        return NextResponse.json(
+          { error: 'Too many requests. Please wait a minute.' },
+          { status: 429 }
+        );
+      }
+
       return NextResponse.json(
-        { error: `Failed to generate image: ${error.message || 'Unknown error'}` },
+        { error: `Failed to generate image: ${error.message}` },
         { status: 500 }
       );
     }
   } catch (error: any) {
-    console.error('Error in API route:', error);
+    console.error('Request processing error:', error);
     return NextResponse.json(
-      { error: 'An unexpected error occurred. Please try again.' },
+      { error: 'An unexpected error occurred' },
       { status: 500 }
     );
   }
