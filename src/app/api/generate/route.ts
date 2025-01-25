@@ -32,41 +32,47 @@ async function generateImageWithRetry(
   API_KEY: string,
   retryCount = 0
 ): Promise<ArrayBuffer> {
-  const response = await fetch(
-    `https://api-inference.huggingface.co/models/${modelId}`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        inputs: prompt,
-        parameters: {
-          negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
-          num_inference_steps: 20,
-          guidance_scale: 7.0,
-          width: 512,
-          height: 512,
-          seed: Math.floor(Math.random() * 1000000)
-        }
-      }),
+  try {
+    const response = await fetch(
+      `https://api-inference.huggingface.co/models/${modelId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          inputs: prompt,
+          parameters: {
+            negative_prompt: "blurry, bad quality, worst quality, jpeg artifacts, text, watermark, nsfw, nude, low quality",
+            num_inference_steps: 25,
+            guidance_scale: 7.5,
+            width: 512,
+            height: 512,
+            seed: Math.floor(Math.random() * 1000000)
+          }
+        }),
+      }
+    );
+
+    if (response.ok) {
+      return await response.arrayBuffer();
     }
-  );
 
-  if (response.ok) {
-    return await response.arrayBuffer();
+    const errorData = await response.json().catch(() => ({}));
+    console.log(`API Response for ${modelId}:`, { status: response.status, error: errorData });
+    
+    if (response.status === 503 && retryCount < MAX_RETRIES) {
+      console.log(`Model warming up, retry ${retryCount + 1} of ${MAX_RETRIES}`);
+      await sleep(RETRY_DELAY);
+      return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
+    }
+
+    throw new Error(JSON.stringify({ status: response.status, error: errorData }));
+  } catch (error) {
+    console.error(`Error with model ${modelId}:`, error);
+    throw error;
   }
-
-  const errorData = await response.json().catch(() => ({}));
-  
-  if (response.status === 503 && retryCount < MAX_RETRIES) {
-    console.log(`Model warming up, retry ${retryCount + 1} of ${MAX_RETRIES}`);
-    await sleep(RETRY_DELAY);
-    return generateImageWithRetry(modelId, prompt, API_KEY, retryCount + 1);
-  }
-
-  throw new Error(JSON.stringify({ status: response.status, error: errorData }));
 }
 
 export async function POST(request: Request) {
@@ -95,13 +101,13 @@ export async function POST(request: Request) {
     }
 
     // Select the appropriate model and prompt
-    const modelId = model === 'waifu' 
-      ? 'stabilityai/stable-diffusion-xl-base-1.0'
-      : 'stabilityai/stable-diffusion-2-1';
+    const modelId = model === 'waifu'
+      ? 'Linaqruf/anything-v3.0'  // Changed to a more reliable anime model
+      : 'dreamlike-art/dreamlike-diffusion-1.0';  // Changed to a more reliable general model
 
     const enhancedPrompt = model === 'waifu'
-      ? `anime artwork, anime style art, high quality anime, ${prompt}, masterpiece, highly detailed`
-      : `${prompt}, high quality, masterpiece, highly detailed`;
+      ? `masterpiece, best quality, anime style, ${prompt}, highly detailed anime artwork`
+      : `${prompt}, masterpiece, best quality, highly detailed, sharp focus, dramatic`;
 
     try {
       const imageBuffer = await generateImageWithRetry(modelId, enhancedPrompt, API_KEY);
